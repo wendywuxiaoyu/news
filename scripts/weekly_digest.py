@@ -420,7 +420,7 @@ def task_section(week_no: int, task: dict) -> str:
     )
 
 
-NOTES_PAGE_TITLE = "学习笔记"
+NOTES_PAGE_TITLE = "笔记"  # 容器页标题里带「笔记」两个字即可
 
 
 def _notion_call(url: str, token: str, method: str = "GET", body=None):
@@ -507,7 +507,8 @@ def fetch_notes(days: int = 8):
         except Exception:
             continue
         text = blocks_to_text(body.get("results", []))
-        if text.strip():
+        # 只有标题、没写内容的页面不算笔记
+        if len(text.strip()) >= 40:
             notes.append((page["child_page"]["title"], text[:2500]))
     return notes
 
