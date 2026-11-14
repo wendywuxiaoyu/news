@@ -420,6 +420,132 @@ def task_section(week_no: int, task: dict) -> str:
     )
 
 
+NOTES_PAGE_TITLE = "学习笔记"
+
+
+def _notion_call(url: str, token: str, method: str = "GET", body=None):
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+def blocks_to_text(blocks) -> str:
+    lines = []
+    for block in blocks:
+        kind = block.get("type")
+        payload = block.get(kind) or {}
+        text = "".join(x.get("plain_text", "") for x in payload.get("rich_text", []))
+        if text.strip():
+            prefix = "- " if kind in ("bulleted_list_item", "numbered_list_item") else ""
+            lines.append(prefix + text.strip())
+    return "\n".join(lines)
+
+
+def fetch_notes(days: int = 8):
+    """读取「学习笔记」页面下最近几篇子页面的文本。"""
+    token = os.environ.get("NOTION_TOKEN", "").strip()
+    page_id = os.environ.get("NOTION_PAGE_ID", "").strip()
+    if not (token and page_id):
+        return []
+
+    try:
+        root = _notion_call(
+            f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100", token
+        )
+    except Exception as exc:
+        log(f"  [warn] 读取笔记目录失败：{exc}")
+        return []
+
+    notes_page = next(
+        (
+            c["id"]
+            for c in root.get("results", [])
+            if c.get("type") == "child_page"
+            and NOTES_PAGE_TITLE in c["child_page"]["title"]
+        ),
+        None,
+    )
+    if not notes_page:
+        return []
+
+    try:
+        sub = _notion_call(
+            f"https://api.notion.com/v1/blocks/{notes_page}/children?page_size=50", token
+        )
+    except Exception as exc:
+        log(f"  [warn] 读取笔记列表失败：{exc}")
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    pages = [c for c in sub.get("results", []) if c.get("type") == "child_page"]
+    pages.sort(key=lambda c: c.get("created_time", ""), reverse=True)
+
+    notes = []
+    for page in pages[:10]:
+        try:
+            stamp = datetime.strptime(
+                page.get("created_time", "")[:19], "%Y-%m-%dT%H:%M:%S"
+            ).replace(tzinfo=timezone.utc)
+            if stamp < cutoff:
+                continue
+        except Exception:
+            pass
+        try:
+            body = _notion_call(
+                f"https://api.notion.com/v1/blocks/{page['id']}/children?page_size=100", token
+            )
+        except Exception:
+            continue
+        text = blocks_to_text(body.get("results", []))
+        if text.strip():
+            notes.append((page["child_page"]["title"], text[:2500]))
+    return notes
+
+
+DIAGNOSIS_PROMPT = """你在检查一位上班族的每周学习进展。
+
+计划本周目标：{goal}
+计划交付物：{deliver}
+验收标准：{check}
+
+他这一周的笔记（可能有多篇）：
+
+{notes}
+
+只输出 Markdown，三小节，总长不超过 220 字：
+
+### 进度判定
+从「达标 / 部分完成 / 滞后」中选一个，一句理由，必须引用笔记里的具体内容。
+
+### 缺口
+最关键的 1–2 个缺口，说清楚缺的是什么。
+
+### 本周建议
+给一个具体动作，他能在 30 分钟内开始做。
+
+规则：
+- 笔记与目标无关，就直接写「笔记未覆盖本周目标」，不要硬凑。
+- 不要编造他没写过的内容。
+- 不说客套话。"""
+
+
+def build_diagnosis_prompt(task: dict, notes) -> str:
+    joined = "\n\n".join(f"【{title}】\n{text}" for title, text in notes)
+    return DIAGNOSIS_PROMPT.format(
+        goal=task["goal"], deliver=task["deliver"], check=task["check"], notes=joined
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="只抓取，不调模型不发邮件")
@@ -456,6 +582,22 @@ def main() -> int:
     markdown = call_llm(build_prompt(items, args.days, plan_context))
     if week_no:
         markdown = task_section(week_no, task) + "\n---\n\n" + markdown
+
+        notes = fetch_notes(args.days)
+        if notes:
+            try:
+                diagnosis = call_llm(build_diagnosis_prompt(task, notes))
+                markdown = (
+                    markdown.rstrip()
+                    + "\n\n---\n\n## 📊 上周进度诊断（根据你的 Notion 笔记）\n\n"
+                    + diagnosis
+                    + "\n"
+                )
+                log(f"  [ok]   进度诊断已生成（读 {len(notes)} 篇笔记）")
+            except Exception as exc:
+                log(f"  [warn] 进度诊断失败：{exc}")
+        else:
+            log("  [skip] 未找到「学习笔记」页面或最近无笔记，跳过进度诊断")
     DIGEST_DIR.mkdir(parents=True, exist_ok=True)
     md_path = DIGEST_DIR / f"{week_tag}.md"
     md_path.write_text(markdown, encoding="utf-8")
