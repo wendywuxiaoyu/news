@@ -2,8 +2,8 @@ name: Weekly AI Digest
 
 on:
   schedule:
-    # 每周一 01:00 UTC = 北京时间 09:00
-    - cron: "0 1 * * 1"
+    # 每周一 23:00 UTC（周日）= 北京时间周一 07:00
+    - cron: "0 23 * * 0"
   workflow_dispatch: {}   # 允许手动点按钮立即跑一次
 
 permissions:
