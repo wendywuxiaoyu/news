@@ -378,6 +378,31 @@ def load_plan_context() -> str:
     return f"我的学习计划上下文（用于写「与你学习计划的关联」一栏）：\n\n{text}"
 
 
+def load_week_task():
+    """按日期计算当前是第几周，返回 (周次, 任务字典)。"""
+    path = CONFIG_DIR / "week-tasks.json"
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    weeks = data.get("weeks") or []
+    if not weeks:
+        return None
+    start = datetime.strptime(data["start"], "%Y-%m-%d").date()
+    offset = (datetime.now().date() - start).days // 7
+    index = max(0, min(offset, len(weeks) - 1))
+    return weeks[index]["week"], weeks[index]
+
+
+def task_section(week_no: int, task: dict) -> str:
+    return (
+        f"## 📌 本周任务 · W{week_no}　{task['title']}\n\n"
+        f"- **本周目标**：{task['goal']}\n"
+        f"- **动手**：{task['do']}\n"
+        f"- **交付**：{task['deliver']}\n"
+        f"- **过关标准**：{task['check']}\n"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="只抓取，不调模型不发邮件")
@@ -402,7 +427,18 @@ def main() -> int:
         log("[失败] 没有抓到任何条目，终止")
         return 1
 
-    markdown = call_llm(build_prompt(items, args.days, load_plan_context()))
+    week = load_week_task()
+    plan_context = load_plan_context()
+    week_no = task = None
+    if week:
+        week_no, task = week
+        plan_context = (
+            f"当前是我学习的第 {week_no} 周，本周主题：{task['title']}。\n\n{plan_context}"
+        )
+
+    markdown = call_llm(build_prompt(items, args.days, plan_context))
+    if week_no:
+        markdown = task_section(week_no, task) + "\n---\n\n" + markdown
     DIGEST_DIR.mkdir(parents=True, exist_ok=True)
     md_path = DIGEST_DIR / f"{week_tag}.md"
     md_path.write_text(markdown, encoding="utf-8")
