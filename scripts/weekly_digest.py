@@ -452,7 +452,13 @@ def blocks_to_text(blocks) -> str:
 
 
 def fetch_notes(days: int = 8):
-    """读取「学习笔记」页面下最近几篇子页面的文本。"""
+    """读取「W1 / W2 …」这类周页面里的笔记正文。
+
+    布局约定（2026-11-14 起）：
+    1. 主页下每周一个页面，标题以 W + 数字开头，例如「W1 什么是大模型」
+    2. 笔记直接写在这个周页面里（或它下面标题带「笔记」的子页面）
+    3. 正文不足 40 字视为没写，避免空模板被当成笔记
+    """
     token = os.environ.get("NOTION_TOKEN", "").strip()
     page_id = os.environ.get("NOTION_PAGE_ID", "").strip()
     if not (token and page_id):
@@ -463,53 +469,56 @@ def fetch_notes(days: int = 8):
             f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100", token
         )
     except Exception as exc:
-        log(f"  [warn] 读取笔记目录失败：{exc}")
-        return []
-
-    notes_page = next(
-        (
-            c["id"]
-            for c in root.get("results", [])
-            if c.get("type") == "child_page"
-            and NOTES_PAGE_TITLE in c["child_page"]["title"]
-        ),
-        None,
-    )
-    if not notes_page:
-        return []
-
-    try:
-        sub = _notion_call(
-            f"https://api.notion.com/v1/blocks/{notes_page}/children?page_size=50", token
-        )
-    except Exception as exc:
-        log(f"  [warn] 读取笔记列表失败：{exc}")
+        log(f"  [warn] 读取主页失败：{exc}")
         return []
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    pages = [c for c in sub.get("results", []) if c.get("type") == "child_page"]
-    pages.sort(key=lambda c: c.get("created_time", ""), reverse=True)
-
     notes = []
-    for page in pages[:10]:
+
+    def read_page(pid: str, title: str) -> None:
         try:
-            stamp = datetime.strptime(
-                page.get("created_time", "")[:19], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=timezone.utc)
-            if stamp < cutoff:
-                continue
+            blocks = _notion_call(
+                f"https://api.notion.com/v1/blocks/{pid}/children?page_size=100", token
+            ).get("results", [])
+        except Exception:
+            return
+        body = [
+            b
+            for b in blocks
+            if b.get("type") not in ("heading_1", "heading_2", "heading_3", "child_page")
+        ]
+        text = blocks_to_text(body).strip()
+        if len(text) < 40:
+            return
+        stamps = [b.get("last_edited_time", "") for b in blocks]
+        latest = max(stamps) if stamps else ""
+        try:
+            when = datetime.strptime(latest[:19], "%Y-%m-%dT%H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+            if when < cutoff:
+                return
         except Exception:
             pass
-        try:
-            body = _notion_call(
-                f"https://api.notion.com/v1/blocks/{page['id']}/children?page_size=100", token
-            )
-        except Exception:
+        notes.append((title, text[:2500]))
+
+    for block in root.get("results", []):
+        if block.get("type") != "child_page":
             continue
-        text = blocks_to_text(body.get("results", []))
-        # 只有标题、没写内容的页面不算笔记
-        if len(text.strip()) >= 40:
-            notes.append((page["child_page"]["title"], text[:2500]))
+        title = block["child_page"]["title"].strip()
+        if "周报" in title or not re.match(r"^W\s*\d+", title, re.IGNORECASE):
+            continue
+        read_page(block["id"], title)
+        try:
+            subs = _notion_call(
+                f"https://api.notion.com/v1/blocks/{block['id']}/children?page_size=100", token
+            ).get("results", [])
+        except Exception:
+            subs = []
+        for sub in subs:
+            if sub.get("type") == "child_page" and "笔记" in sub["child_page"]["title"]:
+                read_page(sub["id"], sub["child_page"]["title"])
+
     return notes
 
 
