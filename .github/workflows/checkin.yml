@@ -1,0 +1,52 @@
+name: Study Check-in
+
+on:
+  schedule:
+    # 周三、周日 20:00 北京时间（12:00 UTC）
+    - cron: "0 12 * * 3,0"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: study-checkin
+  cancel-in-progress: false
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 复盘或提醒
+        env:
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASS: ${{ secrets.MAIL_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PAGE_ID: ${{ vars.NOTION_PAGE_ID || secrets.NOTION_PAGE_ID }}
+        run: python scripts/checkin.py
+
+      - name: 归档复盘记录
+        run: |
+          git config user.name "checkin-bot"
+          git config user.email "checkin-bot@users.noreply.github.com"
+          git add 学习进度/
+          if git diff --staged --quiet; then
+            echo "没有新内容，跳过提交"
+          else
+            git commit -m "checkin: $(date -u +%Y-%m-%d)"
+            git push
+          fi
