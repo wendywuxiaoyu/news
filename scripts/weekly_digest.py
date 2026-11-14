@@ -333,7 +333,10 @@ def sync_notion(title: str, markdown: str) -> None:
     token = os.environ.get("NOTION_TOKEN", "").strip()
     page_id = os.environ.get("NOTION_PAGE_ID", "").strip()
     if not (token and page_id):
-        log("  [skip] Notion 未配置，跳过同步")
+        log(
+            "  [skip] Notion 未配置，跳过同步 "
+            f"(token={'有' if token else '缺'}, page_id={'有' if page_id else '缺'})"
+        )
         return
 
     headers = {
