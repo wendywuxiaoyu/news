@@ -1,0 +1,53 @@
+name: Weekly AI Digest
+
+on:
+  schedule:
+    # 每周一 01:00 UTC = 北京时间 09:00
+    - cron: "0 1 * * 1"
+  workflow_dispatch: {}   # 允许手动点按钮立即跑一次
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 生成并发送周报
+        env:
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASS: ${{ secrets.MAIL_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PAGE_ID: ${{ vars.NOTION_PAGE_ID }}
+          DIGEST_DAYS: "8"
+        run: python scripts/weekly_digest.py
+
+      - name: 把本期归档回仓库
+        run: |
+          git config user.name "digest-bot"
+          git config user.email "digest-bot@users.noreply.github.com"
+          git add 周报/
+          if git diff --staged --quiet; then
+            echo "没有新内容，跳过提交"
+          else
+            git commit -m "digest: $(date -u +%G-W%V)"
+            git push
+          fi
