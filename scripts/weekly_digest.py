@@ -346,15 +346,29 @@ def sync_notion(title: str, markdown: str) -> None:
     }
     blocks = notion_blocks(markdown)
 
-    def post(url, body):
-        req = urllib.request.Request(
-            url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
-        )
+    def call(url, method="GET", body=None):
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            text = resp.read().decode("utf-8")
+            return json.loads(text) if text else {}
 
-    created = post(
+    # 先清掉同名旧页面，避免手动重跑时越积越多
+    try:
+        children = call(f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100")
+        for child in children.get("results", []):
+            if (
+                child.get("type") == "child_page"
+                and child["child_page"]["title"].strip() == title
+            ):
+                call(f"https://api.notion.com/v1/blocks/{child['id']}", "DELETE")
+                log(f"  [ok]   清理同名旧页面：{title}")
+    except Exception as exc:
+        log(f"  [warn] 清理旧页面失败（继续新建）：{exc}")
+
+    created = call(
         "https://api.notion.com/v1/pages",
+        "POST",
         {
             "parent": {"page_id": page_id},
             "properties": {"title": {"title": [{"text": {"content": title}}]}},
@@ -364,8 +378,11 @@ def sync_notion(title: str, markdown: str) -> None:
     block_id = created["id"]
     rest = blocks[100:]
     while rest:
-        post(f"https://api.notion.com/v1/blocks/{block_id}/children",
-             {"children": rest[:100]})
+        call(
+            f"https://api.notion.com/v1/blocks/{block_id}/children",
+            "PATCH",
+            {"children": rest[:100]},
+        )
         rest = rest[100:]
     log(f"  [ok]   Notion 已同步：{title}")
 
